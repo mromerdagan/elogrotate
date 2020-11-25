@@ -1,0 +1,77 @@
+#!/bin/sh
+
+die() {
+	echo "$@" >&2
+	exit 1
+}
+
+warn() {
+	echo "$@" >&2
+}
+
+get_val() {
+	local key="$1"
+	local conf="$2"
+
+	awk -v key="$key" '$1==key {print $2}' "$conf"
+}
+
+for conf in "$@"; do
+	if ! [ -e "$conf" ]; then
+		warn "W: Missing configuration file '$conf'"
+		continue
+	fi
+
+	logs=$(get_val log "$conf")
+	max_size=$(get_val size "$conf")
+	max_rotations=$(get_val rotate "$conf")
+	for log in $logs; do
+		if ! [ -e "$log" ]; then
+			warn "Missing log '$log'"
+			continue
+		fi
+		echo "logrotating $log"
+		log_size=$(stat -c "%s" "$log")
+		if [ "$log_size" -le "$max_size" ]; then
+			echo "D: Skip logrotate for '$log': size less than or equal to $max_size"
+			continue
+		fi
+
+		# Remove extra log splits
+		num_splits=$(ls $log $log.* 2>/dev/null | wc -l)
+		while [ "$num_splits" -ge "$max_rotations" ]; do
+			last_rotation_id=$((num_splits-1))
+			last_rotation="$log.$last_rotation_id.gz"
+			echo "D: Removing last rotation '$last_rotation'"
+			rm $last_rotation
+			num_splits=$(ls $log $log.* 2>/dev/null | wc -l)
+		done
+
+		# Move each log split one index higher
+		# TODO: Support non compressed files
+		last_rotation_id=$((max_rotations-1))
+		while [ "$last_rotation_id" -ge 1 ]; do
+			rotation_split="$log.$last_rotation_id.gz"
+
+			if ! [ -e "$rotation_split" ]; then
+				((last_rotation_id--))
+				continue
+			fi
+
+			echo "D: Moving $rotation_split --> $log.$((last_rotation_id+1)).gz"
+			mv "$rotation_split" "$log.$((last_rotation_id+1)).gz"
+			((last_rotation_id--))
+		done
+
+		echo "D: Moving $log-->$log.1"
+		mv "$log" "$log.1"
+
+		if [ "$(get_val compress $conf)" = 'true' ]; then
+			gzip "$log.1"
+		fi
+
+		touch "$log"
+
+	done
+
+done
