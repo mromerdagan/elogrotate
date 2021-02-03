@@ -25,51 +25,60 @@ for conf in "$@"; do
 	logs=$(get_val log "$conf")
 	max_size=$(get_val size "$conf")
 	max_rotations=$(get_val rotate "$conf")
+	compress=$(get_val compress "$conf")
+
 	for log in $logs; do
 		if ! [ -e "$log" ]; then
 			warn "Missing log '$log'"
 			continue
 		fi
-		echo "logrotating $log"
+
+		echo "logrotating '$log'"
 		log_size=$(stat -c "%s" "$log")
 		if [ "$log_size" -le "$max_size" ]; then
 			echo "D: Skip logrotate for '$log': size less than or equal to $max_size"
 			continue
 		fi
 
-		# Remove extra log splits
-		num_splits=$(ls $log $log.* 2>/dev/null | wc -l)
+		# 1. Remove extra log splits
+		num_splits=$(ls "$log" "$log".* 2>/dev/null | wc -l)
 		while [ "$num_splits" -ge "$max_rotations" ]; do
 			last_rotation_id=$((num_splits-1))
 			last_rotation="$log.$last_rotation_id.gz"
 			echo "D: Removing last rotation '$last_rotation'"
 			rm $last_rotation
-			num_splits=$(ls $log $log.* 2>/dev/null | wc -l)
+			num_splits=$(ls "$log" "$log".* 2>/dev/null | wc -l)
 		done
 
-		# Move each log split one index higher
+		# 2. Move each log split one index higher
 		# TODO: Support non compressed files
 		last_rotation_id=$((max_rotations-1))
 		while [ "$last_rotation_id" -ge 1 ]; do
-			rotation_split="$log.$last_rotation_id.gz"
 
-			if ! [ -e "$rotation_split" ]; then
+			if [ -e "$log.$last_rotation_id" ]; then # Non compressed rotated log
+				rotation_split="$log.$last_rotation_id"
+				renamed_split="$log.$((last_rotation_id+1))"
+			elif [ -e "$log.$last_rotation_id.gz" ]; then # Compressed rotated log
+				rotation_split="$log.$last_rotation_id.gz"
+				renamed_split="$log.$((last_rotation_id+1)).gz"
+			else # rotated log not found
 				((last_rotation_id--))
 				continue
 			fi
 
-			echo "D: Moving $rotation_split --> $log.$((last_rotation_id+1)).gz"
-			mv "$rotation_split" "$log.$((last_rotation_id+1)).gz"
+			echo "D: Moving $rotation_split --> $renamed_split"
+			mv "$rotation_split" "$renamed_split"
 			((last_rotation_id--))
 		done
 
 		echo "D: Moving $log-->$log.1"
 		mv "$log" "$log.1"
 
-		if [ "$(get_val compress $conf)" = 'true' ]; then
+		if [ "$compress" = 'true' ]; then
 			gzip "$log.1"
 		fi
 
+		# 3. Recreate a fresh log file
 		touch "$log"
 
 	done
